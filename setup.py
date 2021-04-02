@@ -5,7 +5,7 @@ setup(
     packages=find_packages(),
     version='0.0.1',
     license='MIT',
-    description='TPU Utilities',
+    description='Utilities for TPUs.',
     author='Sid Black',
     author_email='sdtblck@gmail.com',
     install_requires=[
