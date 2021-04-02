@@ -11,6 +11,7 @@ setup(
     description='Utilities for TPUs.',
     long_description=long_description,
     long_description_content_type="text/markdown",
+    url='https://github.com/sdtblck/tputils',
     author='Sid Black',
     author_email='sdtblck@gmail.com',
     install_requires=[
