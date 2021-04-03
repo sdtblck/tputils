@@ -2,7 +2,7 @@
 
 - **TPUMaker** - a convenience class for creating TPU pods.
 
-Example Usage:
+**Example Usage:**
 ```python
 from tputils import TPUMaker
 
@@ -13,7 +13,7 @@ t.make_tpu(size=32, name="test")
 - **TPUKeepAlive** - runs a python script or function that runs on TPUs, creating a tpu before running calling the function, and remaking and rerunning
 the function if the tpu gets preempted.
 
-Example Usage:
+**Example Usage:**
 ```python
 from tputils import TPUKeepAlive
 
