@@ -2,12 +2,33 @@ import os
 import logging
 import random
 import time
+import multiprocessing
+import signal
+
 from functools import partial
+
 from tpunicorn.tpu import get_tpu
 from tpunicorn.program import is_preempted, recreate
 
 NAMES = ["wheatley", "chonk", "gerard", "simon", "goose", "megatron", "james", "jill",
          "anna", "pietro"]
+
+
+class Timeout:
+
+    def __init__(self, seconds=1, error_message='TimeoutError'):
+        self.seconds = seconds
+        self.error_message = error_message
+
+    def handle_timeout(self, signum, frame):
+        raise TimeoutError(self.error_message)
+
+    def __enter__(self):
+        signal.signal(signal.SIGALRM, self.handle_timeout)
+        signal.alarm(self.seconds)
+
+    def __exit__(self, type, value, traceback):
+        signal.alarm(0)
 
 
 class TPUMaker:
@@ -104,35 +125,105 @@ class TPUMaker:
             raise Exception("No name specified and default namelist is empty")
 
 
+def test_fn(x):
+    print('hello world')
+    time.sleep(10)
+
+
 class TPUKeepAlive(TPUMaker):
     """
     Runs a python script or function that runs on TPUs, creating a tpu before running, and remaking and rerunning
     the function if the tpu gets preempted.
     """
 
-    def __init__(self, size, name, project, zone, tf_version, *args, wait_time=60, **kwargs):
+    def __init__(self, size, name, project, zone, tf_version, *args, wait_time=60, restart_after=86400, **kwargs):
         super().__init__(project, zone, tf_version, *args, **kwargs)
         self.size, self.name, self.wait_time = size, name, wait_time
+        self.restart_after = restart_after
 
     def run_script(self, cmd):
         fn = partial(os.system, command=cmd)
         self.run_fn(fn, except_error=Exception)
 
-    def run_fn(self, fn, *args, except_error=Exception, **kwargs, ):
+    def _run_fn(self, fn, *args, on_timeout_fn, except_error=Exception, **kwargs):
+        timeout_message = f'Restarting TPU - {self.restart_after / (60 ** 2)} hours have passed.'
+        finished = True
+        while True:
+            with Timeout(seconds=self.restart_after, error_message=timeout_message):
+                try:
+                    fn(*args, **kwargs)
+                except TimeoutError as e:
+                    print(e)
+                    on_timeout_fn()
+                    finished = False
+                except except_error as e:
+                    print(f'\nError raised from process: ')
+                    print(e)
+                    # self.recreate_tpu(name=self.name, preempted=True, retry=self.wait_time)
+                    finished = True
+            if finished:
+                break
+
+    def run_fn(self, fn, *args, except_error=Exception, **kwargs):
         if not self.tpu_exists(self.name):
             self.make_tpu(self.size, self.name)
+        recreate_fn = partial(self.recreate_tpu, name=self.name, preempted=True, retry=self.wait_time)
+        kwargs.update({"except_error": except_error,
+                       "on_timeout_fn": recreate_fn})
         while True:
-            try:
-                fn(*args, **kwargs)
-            except except_error as e:
-                print(e)
-                print(f'\nError raised from process... \nwaiting {self.wait_time} seconds.')
+            main_fn = multiprocessing.Process(target=self._run_fn, args=(fn, *args), kwargs=kwargs)
+            main_fn.start()
+            while True:
+                # periodically check if TPU is preempted
+                if not main_fn.is_alive():
+                    # if the process is finished, we want to exit the loop
+                    finished = True
+                    break
                 time.sleep(self.wait_time)
                 if self.is_preempted(self.name):
-                    # then recreate and retry
-                    self.recreate_tpu(name=self.name, preempted=True, retry=self.wait_time)
-                    continue
-                else:
-                    raise
-            break
+                    main_fn.terminate()
+                    recreate_fn()
+                    finished = False
+                    break
+            if finished:
+                break
+
+
+class TPUKeepAliveTest(TPUKeepAlive):
+
+    def run_fn_test(self, except_error=Exception, **kwargs):
+        if not False:
+            print(f'making tpu {self.name}...')
+        timeout_fn = partial(print, f'Recreating tpu {self.name}...')
+        kwargs.update({"except_error": except_error,
+                       "on_timeout_fn": timeout_fn})
+        while True:
+            main_fn = multiprocessing.Process(target=self._run_fn, args=(test_fn, None), kwargs=kwargs)
+            main_fn.start()
+            while True:
+                # periodically check if TPU is preempted
+                if not main_fn.is_alive():
+                    # if the process is finished, we want to exit the loop
+                    finished = True
+                    break
+                time.sleep(self.wait_time)
+                if random.random() < 0.05:
+                    print('Fake tpu is pre-empted! Terminating fn')
+                    main_fn.terminate()
+                    time.sleep(1)
+                    timeout_fn()
+                    finished = False
+                    break
+            if finished:
+                break
+
+
+if __name__ == "__main__":
+    # test recreate on preemption
+    t = TPUKeepAliveTest(8, 'test', None, None, None, wait_time=1, restart_after=11)
+    t.run_fn_test()
+
+    # test recreate on timeout
+    t = TPUKeepAliveTest(8, 'test', None, None, None, wait_time=1, restart_after=9)
+    t.run_fn_test()
 
